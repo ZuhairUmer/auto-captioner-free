@@ -4,6 +4,12 @@ export interface WordCue {
   endTime: number;
 }
 
+export interface GeneratedCue {
+  startTime: number;
+  endTime: number;
+  words: WordCue[];
+}
+
 export interface CaptionCue {
   id: number;
   text: string;
@@ -20,7 +26,7 @@ export interface SubtitleStyle {
   backgroundColor: string;
   highlightColor: string;
   showBackground: boolean;
-  enableHighlight: boolean;
+  maxWordsPerCue: number;
 }
 
 export enum TranscriptionStatus {

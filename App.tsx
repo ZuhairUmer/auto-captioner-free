@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { CaptionCue, SubtitleStyle, TranscriptionStatus, WordCue } from './types';
+import { CaptionCue, SubtitleStyle, TranscriptionStatus, WordCue, GeneratedCue } from './types';
 import { transcribeAudio, generateCaptionsFromTranscription } from './services/geminiService';
-import { renderVideoWithCaptions, extractAudio } from './services/videoRenderer';
+import { renderVideoWithCaptions, extractAudio, renderCaptionsOnGreenScreen } from './services/videoRenderer';
 import { LoadingSpinner, UploadIcon, TimeIcon } from './components/icons';
 
 const initialStyles: SubtitleStyle = {
@@ -12,7 +12,7 @@ const initialStyles: SubtitleStyle = {
   backgroundColor: '#000000',
   highlightColor: '#FFFF00',
   showBackground: true,
-  enableHighlight: true,
+  maxWordsPerCue: 7,
 };
 
 function App() {
@@ -26,9 +26,12 @@ function App() {
   const [statusMessage, setStatusMessage] = useState<string>('Upload a video to start.');
   
   const [captions, setCaptions] = useState<CaptionCue[]>([]);
+  const [originalCues, setOriginalCues] = useState<GeneratedCue[]>([]);
   const [styles, setStyles] = useState<SubtitleStyle>(initialStyles);
   
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
+  const [outputFilename, setOutputFilename] = useState<string>('');
+
 
   const isProcessing = ![
     TranscriptionStatus.IDLE,
@@ -49,6 +52,50 @@ function App() {
       videoElement.removeEventListener('timeupdate', handleTimeUpdate);
     };
   }, [videoUrl, outputUrl]);
+  
+  useEffect(() => {
+    if (originalCues.length === 0) {
+      setCaptions([]);
+      return;
+    }
+
+    const allWords: WordCue[] = originalCues.flatMap(cue => cue.words);
+    if (allWords.length === 0) {
+      setCaptions([]);
+      return;
+    }
+    
+    const newCaptions: CaptionCue[] = [];
+    let currentWords: WordCue[] = [];
+    let cueId = 0;
+
+    for (const word of allWords) {
+      currentWords.push(word);
+      if (currentWords.length >= styles.maxWordsPerCue) {
+        newCaptions.push({
+          id: cueId++,
+          words: currentWords,
+          startTime: currentWords[0].startTime,
+          endTime: currentWords[currentWords.length - 1].endTime,
+          text: currentWords.map(w => w.word).join(' '),
+        });
+        currentWords = [];
+      }
+    }
+
+    if (currentWords.length > 0) {
+      newCaptions.push({
+        id: cueId++,
+        words: currentWords,
+        startTime: currentWords[0].startTime,
+        endTime: currentWords[currentWords.length - 1].endTime,
+        text: currentWords.map(w => w.word).join(' '),
+      });
+    }
+    
+    setCaptions(newCaptions);
+  }, [originalCues, styles.maxWordsPerCue]);
+
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -60,6 +107,7 @@ function App() {
       setStatus(TranscriptionStatus.IDLE);
       setStatusMessage('Video loaded. Ready to generate captions.');
       setCaptions([]);
+      setOriginalCues([]);
     } else {
       setStatus(TranscriptionStatus.ERROR);
       setStatusMessage('Please select a valid video file.');
@@ -79,7 +127,7 @@ function App() {
     if (!videoFile) return;
 
     setOutputUrl(null);
-    setCaptions([]);
+    setOriginalCues([]);
 
     try {
       setStatus(TranscriptionStatus.PREPARING);
@@ -96,15 +144,7 @@ function App() {
       }
       const generatedCues = await generateCaptionsFromTranscription(transcription, videoDuration, setStatusMessage);
 
-      const formattedCaptions: CaptionCue[] = generatedCues.map((cue, index) => ({
-          id: index,
-          text: cue.words.map(w => w.word).join(' '),
-          startTime: cue.startTime,
-          endTime: cue.endTime,
-          words: cue.words,
-      }));
-
-      setCaptions(formattedCaptions);
+      setOriginalCues(generatedCues);
       setStatus(TranscriptionStatus.COMPLETED);
       setStatusMessage('Captions generated successfully! You can now edit them or render the video.');
 
@@ -121,6 +161,7 @@ function App() {
     
     setStatus(TranscriptionStatus.RENDERING);
     setStatusMessage('Preparing to render video...');
+    setOutputFilename(`${videoFile.name.replace(/\.[^/.]+$/, "")}_captioned.webm`);
     
     try {
         const url = await renderVideoWithCaptions(videoFile, captions, styles, videoDimensions, setStatusMessage);
@@ -128,6 +169,33 @@ function App() {
         setVideoUrl(null);
         setStatus(TranscriptionStatus.COMPLETED);
         setStatusMessage('Video rendered successfully! Click Download to save.');
+    } catch (error) {
+        console.error(error);
+        const message = error instanceof Error ? error.message : 'An unknown error occurred.';
+        setStatus(TranscriptionStatus.ERROR);
+        setStatusMessage(`Render failed: ${message}`);
+    }
+  };
+  
+  const handleRenderGreenScreen = async () => {
+    if (!videoFile || captions.length === 0) return;
+    const duration = videoRef.current?.duration;
+    if (!duration) {
+        setStatus(TranscriptionStatus.ERROR);
+        setStatusMessage('Could not determine video duration for green screen render.');
+        return;
+    }
+
+    setStatus(TranscriptionStatus.RENDERING);
+    setStatusMessage('Preparing to render green screen captions...');
+    setOutputFilename(`${videoFile.name.replace(/\.[^/.]+$/, "")}_greenscreen_captions.webm`);
+
+    try {
+        const url = await renderCaptionsOnGreenScreen(captions, styles, videoDimensions, duration, setStatusMessage);
+        setOutputUrl(url);
+        setVideoUrl(null);
+        setStatus(TranscriptionStatus.COMPLETED);
+        setStatusMessage('Green screen video rendered successfully! Click Download to save.');
     } catch (error) {
         console.error(error);
         const message = error instanceof Error ? error.message : 'An unknown error occurred.';
@@ -192,7 +260,7 @@ function App() {
                        WebkitBoxDecorationBreak: 'clone',
                      }}>
                       {activeCaption.words.map((word, i) => (
-                        <span key={i} style={{ color: styles.enableHighlight && currentTime >= word.startTime && currentTime <= word.endTime ? styles.highlightColor : styles.color }}>
+                        <span key={i} style={{ color: currentTime >= word.startTime && currentTime <= word.endTime ? styles.highlightColor : styles.color }}>
                           {word.word}{' '}
                         </span>
                       ))}
@@ -208,7 +276,7 @@ function App() {
             {isProcessing && <LoadingSpinner />}
             <p className="flex-grow">{statusMessage}</p>
             {status === TranscriptionStatus.COMPLETED && outputUrl && (
-              <a href={outputUrl} download={`${videoFile?.name.replace(/\.[^/.]+$/, "")}_captioned.webm`} className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+              <a href={outputUrl} download={outputFilename} className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
                 Download Video
               </a>
             )}
@@ -227,6 +295,9 @@ function App() {
                <button onClick={handleRender} disabled={captions.length === 0 || isProcessing} className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition-colors w-full">
                  Render Video
                </button>
+                <button onClick={handleRenderGreenScreen} disabled={captions.length === 0 || isProcessing} className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded-lg transition-colors w-full">
+                 Export Green Screen
+               </button>
              </div>
            </div>
           {/* Style Editor */}
@@ -244,20 +315,20 @@ function App() {
                   <option>Courier New</option>
                 </select>
               </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Font Color</label>
-                <input type="color" value={styles.color} onChange={(e) => setStyles(s => ({ ...s, color: e.target.value }))} className="w-full h-10 bg-gray-700 border-gray-600 rounded-lg" />
-              </div>
-              <div className="flex items-center justify-between">
-                <label htmlFor="enable-highlight" className="block text-sm font-medium">Enable Word Highlighting</label>
-                <input id="enable-highlight" type="checkbox" checked={styles.enableHighlight} onChange={(e) => setStyles(s => ({ ...s, enableHighlight: e.target.checked }))} className="w-5 h-5" />
-              </div>
-              {styles.enableHighlight && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Font Color</label>
+                  <input type="color" value={styles.color} onChange={(e) => setStyles(s => ({ ...s, color: e.target.value }))} className="w-full h-10 bg-gray-700 border-gray-600 rounded-lg" />
+                </div>
                 <div>
                   <label className="block text-sm font-medium mb-1">Highlight Color</label>
                   <input type="color" value={styles.highlightColor} onChange={(e) => setStyles(s => ({ ...s, highlightColor: e.target.value }))} className="w-full h-10 bg-gray-700 border-gray-600 rounded-lg" />
                 </div>
-              )}
+              </div>
+               <div>
+                <label className="block text-sm font-medium mb-1">Words per Caption ({styles.maxWordsPerCue})</label>
+                <input type="range" min="3" max="15" value={styles.maxWordsPerCue} onChange={(e) => setStyles(s => ({ ...s, maxWordsPerCue: Number(e.target.value) }))} className="w-full" />
+              </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Font Size ({styles.fontSize}%)</label>
                 <input type="range" min="1" max="20" value={styles.fontSize} onChange={(e) => setStyles(s => ({ ...s, fontSize: Number(e.target.value) }))} className="w-full" />

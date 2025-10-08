@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { TranscriptionStatus, CaptionCue, WordCue } from '../types';
+import { TranscriptionStatus, GeneratedCue, WordCue } from '../types';
 
 // Helper to write a string to a DataView
 function writeString(view: DataView, offset: number, str: string) {
@@ -108,12 +108,6 @@ export const transcribeAudio = async (
         setTranscriptionStatus(TranscriptionStatus.ERROR);
         throw error;
     }
-};
-
-type GeneratedCue = {
-    startTime: number;
-    endTime: number;
-    words: WordCue[];
 };
 
 export const generateCaptionsFromTranscription = async (

@@ -151,6 +151,78 @@ export const renderVideoWithCaptions = async (
     });
 };
 
+/**
+ * Renders captions on a green screen background.
+ */
+export const renderCaptionsOnGreenScreen = async (
+    captions: CaptionCue[],
+    styles: SubtitleStyle,
+    videoDimensions: { width: number, height: number },
+    duration: number,
+    setProgress: (message: string) => void
+): Promise<string> => {
+    return new Promise(async (resolve, reject) => {
+        const { width, height } = videoDimensions;
+        
+        if (duration <= 0) {
+            return reject(new Error('Video duration must be positive.'));
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!ctx) return reject(new Error('Could not create canvas context.'));
+
+        const chunks: Blob[] = [];
+        const canvasStream = canvas.captureStream(30);
+        
+        const recorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm; codecs=vp9' }); 
+
+        recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        recorder.onstop = () => {
+            const blob = new Blob(chunks, { type: 'video/webm' });
+            const url = URL.createObjectURL(blob);
+            resolve(url);
+        };
+        
+        recorder.onerror = (e) => reject(new Error(`MediaRecorder error: ${e.type}`));
+
+        const startTime = performance.now();
+        recorder.start();
+
+        const renderLoop = (now: number) => {
+            const currentTime = (now - startTime) / 1000;
+
+            if (currentTime >= duration) {
+                if (recorder.state === 'recording') {
+                    recorder.stop();
+                }
+                setProgress('Rendering complete.');
+                return;
+            }
+
+            ctx.fillStyle = '#00FF00';
+            ctx.fillRect(0, 0, width, height);
+
+            const activeCaption = captions.find(c => currentTime >= c.startTime && currentTime <= c.endTime);
+            if (activeCaption) {
+                drawCaption(ctx, activeCaption, currentTime, styles, height);
+            }
+            
+            const progress = (currentTime / duration) * 100;
+            setProgress(`Rendering green screen... ${Math.round(progress)}%`);
+
+            requestAnimationFrame(renderLoop);
+        };
+        
+        requestAnimationFrame(renderLoop);
+    });
+};
+
 
 /**
  * Helper function to draw a single caption on the canvas.
@@ -224,7 +296,7 @@ const drawCaption = (
             
             if (!word) continue;
 
-            const isHighlighted = styles.enableHighlight && currentTime >= word.startTime && currentTime <= word.endTime;
+            const isHighlighted = currentTime >= word.startTime && currentTime <= word.endTime;
             ctx.fillStyle = isHighlighted ? styles.highlightColor : styles.color;
             
             const wordWidth = ctx.measureText(wordStr).width;
